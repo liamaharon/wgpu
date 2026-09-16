@@ -42,6 +42,12 @@ Bottom level categories:
 
 ## Unreleased
 
+### Performance
+
+#### Metal
+
+- Avoid submitting empty intermediate command buffers while retaining completion signaling and buffers that may contain externally encoded work.
+
 ## v29.0.3 (2026-05-01)
 
 ### Bug Fixes

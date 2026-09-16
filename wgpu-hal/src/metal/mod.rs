@@ -578,7 +578,13 @@ impl crate::Queue for Queue {
                 }
             };
 
-            for cmd_buffer in command_buffers {
+            for (index, cmd_buffer) in command_buffers.iter().enumerate() {
+                // The final buffer carries the completion handler and shared-event fence.
+                // Empty intermediates have no encoders or externally recorded work.
+                // Leave them uncommitted: their Drop balances the outstanding counter.
+                if index + 1 < command_buffers.len() && !cmd_buffer.may_have_work {
+                    continue;
+                }
                 cmd_buffer.raw.commit();
                 // One command buffer per `end_encoding` call moves from the
                 // "created but not yet submitted" bucket into the submitted
@@ -1111,6 +1117,7 @@ pub struct CommandEncoder {
     shared: Arc<AdapterShared>,
     queue_shared: Arc<QueueShared>,
     raw_cmd_buf: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+    may_have_work: atomic::AtomicBool,
     state: CommandState,
     temp: Temp,
     counters: Arc<wgt::HalCounters>,
@@ -1130,6 +1137,7 @@ unsafe impl Sync for CommandEncoder {}
 #[derive(Debug)]
 pub struct CommandBuffer {
     raw: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    may_have_work: bool,
     queue_shared: Arc<QueueShared>,
 }
 
