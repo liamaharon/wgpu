@@ -155,10 +155,13 @@ impl Encoder<'_> {
 
 impl super::CommandEncoder {
     pub fn raw_command_buffer(&self) -> Option<&ProtocolObject<dyn MTLCommandBuffer>> {
+        // External HAL callers may encode events or work that we cannot inspect.
+        self.may_have_work.store(true, atomic::Ordering::Relaxed);
         self.raw_cmd_buf.as_deref()
     }
 
     fn enter_blit(&mut self) -> Retained<ProtocolObject<dyn MTLBlitCommandEncoder>> {
+        self.may_have_work.store(true, atomic::Ordering::Relaxed);
         if self.state.blit.is_none() {
             self.leave_acceleration_structure_builder();
             debug_assert!(self.state.render.is_none() && self.state.compute.is_none());
@@ -265,6 +268,7 @@ impl super::CommandEncoder {
     fn enter_acceleration_structure_builder(
         &mut self,
     ) -> Retained<ProtocolObject<dyn MTLAccelerationStructureCommandEncoder>> {
+        self.may_have_work.store(true, atomic::Ordering::Relaxed);
         if self.state.acceleration_structure_builder.is_none() {
             self.leave_blit();
             debug_assert!(
@@ -482,6 +486,9 @@ impl crate::CommandEncoder for super::CommandEncoder {
         let queue = &self.queue_shared.raw;
         let retain_references = self.shared.settings.retain_command_buffer_references;
         let relay = self.queue_shared.relay.get();
+        // A relay wait is meaningful even without a render, compute, or blit encoder.
+        self.may_have_work
+            .store(relay.is_some(), atomic::Ordering::Relaxed);
 
         // Guard against exhausting Metal's command buffer budget. Use the hard
         // limit (`MAX_COMMAND_BUFFERS`) so we fail before Metal can hang inside
@@ -570,6 +577,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
 
         Ok(super::CommandBuffer {
             raw: self.raw_cmd_buf.take().unwrap(),
+            may_have_work: self.may_have_work.load(atomic::Ordering::Relaxed),
             queue_shared: Arc::clone(&self.queue_shared),
         })
     }
@@ -896,6 +904,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
         &mut self,
         desc: &crate::RenderPassDescriptor<super::QuerySet, super::TextureView>,
     ) -> Result<(), crate::DeviceError> {
+        self.may_have_work.store(true, atomic::Ordering::Relaxed);
         self.begin_pass();
         self.state.index = None;
 
@@ -1692,6 +1701,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
     // compute
 
     unsafe fn begin_compute_pass(&mut self, desc: &crate::ComputePassDescriptor<super::QuerySet>) {
+        self.may_have_work.store(true, atomic::Ordering::Relaxed);
         self.begin_pass();
 
         debug_assert!(self.state.blit.is_none());
