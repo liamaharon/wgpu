@@ -80,7 +80,7 @@ impl CommandEncoder {
         #[cfg(feature = "render-pass-timestamp-hook")]
         if desc.timestamp_writes.is_none() {
             if let Some((query_set, beginning, end)) =
-                render_pass_timestamp_hook::HOOK.get().and_then(|hook| hook(desc.label))
+                render_pass_timestamp_hook::HOOK.get().and_then(|hook| hook(desc))
             {
                 let desc = RenderPassDescriptor {
                     timestamp_writes: Some(RenderPassTimestampWrites {
@@ -470,18 +470,19 @@ impl CommandEncoder {
 
 /// Timestamps for every render pass recorded without its own: an installed
 /// hook supplies a query set and the indices for a pass's beginning and end,
-/// given the pass's label. For profiling whole frames pass by pass on GPUs
+/// given the pass's descriptor. For profiling whole frames pass by pass on GPUs
 /// that only sample timestamps at pass boundaries (Apple GPUs), without
 /// changing the code that records the passes.
 #[cfg(feature = "render-pass-timestamp-hook")]
 pub mod render_pass_timestamp_hook {
     use alloc::boxed::Box;
 
-    use crate::QuerySet;
+    use crate::{QuerySet, RenderPassDescriptor};
 
-    /// Returns the query set and the beginning and end indices for a pass with
-    /// the given label, or `None` to leave the pass untimed.
-    pub type Hook = dyn Fn(Option<&str>) -> Option<(QuerySet, u32, u32)> + Send + Sync;
+    /// Returns the query set and the beginning and end indices for the pass
+    /// being recorded, or `None` to leave it untimed.
+    pub type Hook =
+        dyn Fn(&RenderPassDescriptor<'_>) -> Option<(QuerySet, u32, u32)> + Send + Sync;
 
     pub(crate) static HOOK: std::sync::OnceLock<Box<Hook>> = std::sync::OnceLock::new();
 
