@@ -172,6 +172,10 @@ web = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "wgpu-types/web"]
 ##
 ## This can allow for better error reporting and for improved multithreading
 ## support.
+## Lets a profiler supply timestamps for render passes recorded without
+## their own (see `render_pass_timestamp_hook`).
+render-pass-timestamp-hook = ["std"]
+
 std = [
     "raw-window-handle/std",
     "wgpu-types/std",

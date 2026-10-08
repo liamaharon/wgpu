@@ -77,6 +77,27 @@ impl CommandEncoder {
         &'encoder mut self,
         desc: &RenderPassDescriptor<'_>,
     ) -> RenderPass<'encoder> {
+        #[cfg(feature = "render-pass-timestamp-hook")]
+        if desc.timestamp_writes.is_none() {
+            if let Some((query_set, beginning, end)) =
+                render_pass_timestamp_hook::HOOK.get().and_then(|hook| hook(desc.label))
+            {
+                let desc = RenderPassDescriptor {
+                    timestamp_writes: Some(RenderPassTimestampWrites {
+                        query_set: &query_set,
+                        beginning_of_pass_write_index: Some(beginning),
+                        end_of_pass_write_index: Some(end),
+                    }),
+                    ..desc.clone()
+                };
+                let rpass = self.inner.begin_render_pass(&desc);
+                return RenderPass {
+                    inner: rpass,
+                    actions: Arc::clone(&self.actions),
+                    _encoder_guard: api::PhantomDrop::default(),
+                };
+            }
+        }
         let rpass = self.inner.begin_render_pass(desc);
         RenderPass {
             inner: rpass,
@@ -444,5 +465,29 @@ impl CommandEncoder {
                 state: t.state,
             }),
         );
+    }
+}
+
+/// Timestamps for every render pass recorded without its own: an installed
+/// hook supplies a query set and the indices for a pass's beginning and end,
+/// given the pass's label. For profiling whole frames pass by pass on GPUs
+/// that only sample timestamps at pass boundaries (Apple GPUs), without
+/// changing the code that records the passes.
+#[cfg(feature = "render-pass-timestamp-hook")]
+pub mod render_pass_timestamp_hook {
+    use alloc::boxed::Box;
+
+    use crate::QuerySet;
+
+    /// Returns the query set and the beginning and end indices for a pass with
+    /// the given label, or `None` to leave the pass untimed.
+    pub type Hook = dyn Fn(Option<&str>) -> Option<(QuerySet, u32, u32)> + Send + Sync;
+
+    pub(crate) static HOOK: std::sync::OnceLock<Box<Hook>> = std::sync::OnceLock::new();
+
+    /// Installs the hook for the rest of the process. Returns `false` if one
+    /// is already installed.
+    pub fn install(hook: Box<Hook>) -> bool {
+        HOOK.set(hook).is_ok()
     }
 }
