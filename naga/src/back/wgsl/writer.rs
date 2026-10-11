@@ -22,6 +22,102 @@ use crate::{
 /// Shorthand result used internally by the backend
 type BackendResult = Result<(), Error>;
 
+/// Decimal `f32` literals longer than this are written as hex floats.
+const MAX_F32_DECIMAL_DIGITS: usize = 17;
+
+/// Writes an `f32` literal.
+///
+/// Plain decimal is the shortest form that round-trips, but very large or very
+/// small magnitudes spell out dozens of digits. WebKit's WGSL parser rejects
+/// those, although they are valid WGSL: `100000000000000000000f` fails to parse,
+/// and so does the exponent form `3.4028235e38f`. One such constant invalidates
+/// its whole shader module. A hex float is exact and accepted, so such values
+/// are written as one: `f32::MAX` becomes `0x1.fffffep+127f`.
+fn write_f32_literal(out: &mut impl Write, value: f32) -> core::fmt::Result {
+    let decimal = format!("{value}");
+    let digits = decimal.bytes().filter(u8::is_ascii_digit).count();
+    if !value.is_finite() || digits <= MAX_F32_DECIMAL_DIGITS {
+        return write!(out, "{decimal}f");
+    }
+    let bits = value.to_bits();
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x7f_ffff;
+    if exponent == 0 {
+        // Subnormal: the mantissa is a multiple of 2^-149.
+        return write!(out, "{sign}0x{mantissa:x}p-149f");
+    }
+    // The 23-bit fraction, shifted to fill six hex digits.
+    let fraction = format!("{:06x}", mantissa << 1);
+    let fraction = fraction.trim_end_matches('0');
+    let point = if fraction.is_empty() { "" } else { "." };
+    write!(out, "{sign}0x1{point}{fraction}p{:+}f", exponent - 127)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_f32_literal;
+    use alloc::string::String;
+
+    fn literal(value: f32) -> String {
+        let mut out = String::new();
+        write_f32_literal(&mut out, value).unwrap();
+        out
+    }
+
+    #[test]
+    fn ordinary_f32_literals_stay_decimal() {
+        for (value, expected) in [
+            (0.0, "0f"),
+            (-1.5, "-1.5f"),
+            (0.1, "0.1f"),
+            (1e16, "10000000000000000f"),
+            (1e-10, "0.0000000001f"),
+        ] {
+            assert_eq!(literal(value), expected);
+        }
+    }
+
+    #[test]
+    fn long_f32_literals_are_exact_hex_floats() {
+        for (value, expected) in [
+            (f32::MAX, "0x1.fffffep+127f"),
+            (f32::MIN, "-0x1.fffffep+127f"),
+            (3.4028235e37, "0x1.999998p+124f"),
+            (1e20, "0x1.5af1d8p+66f"),
+            (2f32.powi(70), "0x1p+70f"),
+            (f32::MIN_POSITIVE, "0x1p-126f"),
+            (1e-30, "0x1.4484cp-100f"),
+            (f32::from_bits(1), "0x1p-149f"),
+            (-f32::from_bits(3), "-0x3p-149f"),
+        ] {
+            assert_eq!(literal(value), expected, "{value:e}");
+        }
+    }
+
+    #[cfg(feature = "wgsl-in")]
+    #[test]
+    fn hex_f32_literals_round_trip_through_the_wgsl_front_end() {
+        for value in [
+            f32::MAX,
+            3.4028235e37,
+            1e20,
+            1e-30,
+            f32::MIN_POSITIVE,
+            f32::from_bits(5),
+        ] {
+            let source = alloc::format!("const C: f32 = {};", literal(value));
+            let module = crate::front::wgsl::parse_str(&source).unwrap();
+            let (_, constant) = module.constants.iter().next().unwrap();
+            assert_eq!(
+                module.global_expressions[constant.init],
+                crate::Expression::Literal(crate::Literal::F32(value)),
+                "{source}"
+            );
+        }
+    }
+}
+
 /// WGSL [attribute](https://gpuweb.github.io/gpuweb/wgsl/#attributes)
 enum Attribute {
     Binding(u32),
@@ -1384,7 +1480,7 @@ impl<W: Write> Writer<W> {
         match expressions[expr] {
             Expression::Literal(literal) => match literal {
                 crate::Literal::F16(value) => write!(self.out, "{value}h")?,
-                crate::Literal::F32(value) => write!(self.out, "{value}f")?,
+                crate::Literal::F32(value) => write_f32_literal(&mut self.out, value)?,
                 crate::Literal::U16(value) => write!(self.out, "u16({value})")?,
                 crate::Literal::I16(value) => write!(self.out, "i16({value})")?,
                 crate::Literal::U32(value) => write!(self.out, "{value}u")?,
